@@ -43,10 +43,13 @@ const SPOKEN_PUNCTUATION: [RegExp, string][] = [
 const SWAPPABLE =
   '(?:\\d+(?::\\d+)?(?:\\s?(?:am|pm))?|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|monday|tuesday|wednesday|thursday|friday|saturday|sunday|today|tomorrow|tonight)';
 const CORRECTION = new RegExp(
-  `\\b${SWAPPABLE}\\b,?\\s+(?:no wait|no sorry|sorry|i mean|actually|no)[,]?\\s+(${SWAPPABLE})\\b`,
+  `\\b${SWAPPABLE}\\b([,.?!]?)\\s+(?:no wait|no sorry|sorry|i mean|actually|no)[,.?!]?\\s+(${SWAPPABLE})\\b`,
   'gi',
 );
-const SCRATCH_THAT = /[^.!?\n]*\bscratch that\b[.,]?\s*/gi;
+// "…friday. Scratch that." drops the previous sentence; "friday scratch that
+// monday" drops the words before it in the same sentence.
+const SCRATCH_SENTENCE = /[^.!?\n]+[.!?]\s+scratch that\b[.,!?]?\s*/gi;
+const SCRATCH_THAT = /[^.!?\n]*\bscratch that\b[.,!?]?\s*/gi;
 
 const CASUAL_TO_FORMAL: [RegExp, string][] = [
   [/\bgonna\b/gi, 'going to'],
@@ -105,6 +108,24 @@ function sentenceCase(text: string) {
     .replace(/(^|[.!?]\s+|\n\s*)([a-z])/g, (_m, lead: string, ch: string) => lead + ch.toUpperCase());
 }
 
+const SPOKEN_ENDING =
+  /(?:[.,!?:;]|\b(?:period|full stop|comma|question mark|exclamation (?:point|mark)|colon|new line|new paragraph|scratch that))$/i;
+const QUESTION_START =
+  /^(?:(?:um+|uh+|so|and|okay|ok|hey)\s+)*(?:who|what|when|where|why|how|which|whose|can|could|would|should|will|shall|is|are|am|was|were|do|does|did|have|has|may|might|isn't|aren't|don't|doesn't|didn't|won't|can't)\b/i;
+
+// "hey team can we…", "so anyway do you…": an auxiliary + subject near the start.
+const QUESTION_INVERSION =
+  /^(?:\S+\s+){0,3}(?:can|could|would|will|should|shall|do|does|did|are|is|have|has)\s+(?:we|you|i|they|he|she|it|someone|anyone|anybody|this|that)\b/i;
+
+// Speech engines return each pause-separated phrase without punctuation.
+// Ending phrases at pauses (with "?" for questions) gives the cleanup real
+// sentence boundaries to work with.
+export function punctuatePhrase(phrase: string, english: boolean) {
+  const text = phrase.trim();
+  if (!text || SPOKEN_ENDING.test(text)) return text;
+  return `${text}${english && (QUESTION_START.test(text) || QUESTION_INVERSION.test(text)) ? '?' : '.'}`;
+}
+
 export function autoEdit(raw: string, options: EditOptions): EditResult {
   const stats = { fillers: 0, corrections: 0, snippets: 0, dictionary: 0 };
   let text = ` ${raw.replace(/\s+/g, ' ').trim()} `;
@@ -119,9 +140,12 @@ export function autoEdit(raw: string, options: EditOptions): EditResult {
   text = text.replace(repeats, '$1');
 
   for (const [pattern, mark] of SPOKEN_PUNCTUATION) text = text.replace(pattern, mark);
+  text = text.replace(/\blets(?= (?:go|ship|do|meet|try|see|get|make|talk|start|move|plan|discuss|check|review|keep)\b)/gi, "let's");
 
+  stats.corrections += count(text, SCRATCH_SENTENCE);
+  text = text.replace(SCRATCH_SENTENCE, '');
   stats.corrections += count(text, SCRATCH_THAT) + count(text, CORRECTION);
-  text = text.replace(SCRATCH_THAT, '').replace(CORRECTION, '$1');
+  text = text.replace(SCRATCH_THAT, '').replace(CORRECTION, (_m, mark: string, word: string) => word + (mark === '?' || mark === '!' ? mark : ''));
 
   const protectedValues: string[] = [];
   const snippetPass = replaceEntries(text, options.snippets, protectedValues);
@@ -137,6 +161,7 @@ export function autoEdit(raw: string, options: EditOptions): EditResult {
   }
 
   text = text
+    .replace(/([?!])\s*[.,]/g, '$1')
     .replace(/[ \t]+([,.!?:])/g, '$1')
     .replace(/([,.!?:])(?=[^\s\d"')\]])/g, '$1 ')
     .replace(/,\s*([.!?])/g, '$1')
