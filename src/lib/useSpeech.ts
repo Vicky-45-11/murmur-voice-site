@@ -26,6 +26,7 @@ interface Recognition {
   onerror: ((event: SpeechErrorEvent) => void) | null;
   onend: (() => void) | null;
   onspeechstart: (() => void) | null;
+  onaudiostart: (() => void) | null;
   start: () => void;
   stop: () => void;
   abort: () => void;
@@ -43,11 +44,22 @@ function getRecognition(): RecognitionConstructor | null {
 
 // Errors that mean "stop trying"; anything else (no-speech, a dropped
 // session) is recovered by quietly restarting while the user still wants to talk.
+const inFrame = (() => {
+  try {
+    return window.self !== window.top;
+  } catch {
+    return true;
+  }
+})();
+
 const FATAL_ERRORS: Record<string, string> = {
-  'not-allowed': 'Microphone access was blocked. Allow it from the lock icon in the address bar, or type below instead.',
+  'not-allowed': inFrame
+    ? 'This preview window blocks the microphone. Open the site in its own tab (your Vercel link) to dictate, or type below.'
+    : 'Microphone access was blocked. Allow it from the lock icon in the address bar, then press the mic again.',
   'service-not-allowed': 'Your browser’s speech service is turned off. You can still type below.',
   'audio-capture': 'No microphone was found. Check that one is plugged in and selected in your system settings.',
-  network: 'Your browser’s speech service could not be reached. Check your connection, or type below.',
+  network:
+    'Your browser’s speech service could not be reached. Check your connection. Brave and some privacy browsers block it; Chrome or Edge work.',
   'language-not-supported': 'This browser can’t recognise the selected language. Pick another one.',
 };
 
@@ -92,6 +104,8 @@ export function useSpeech(onFinal: (phrase: FinalPhrase) => void, lang: string) 
   const [interim, setInterim] = useState('');
   const [error, setError] = useState('');
   const [hearing, setHearing] = useState(false);
+  const [audioActive, setAudioActive] = useState(false);
+  const [notice, setNotice] = useState('');
   const recognitionRef = useRef<Recognition | null>(null);
   const wantedRef = useRef(false);
   const restartTimer = useRef<number>();
@@ -118,7 +132,7 @@ export function useSpeech(onFinal: (phrase: FinalPhrase) => void, lang: string) 
     teardown();
   }, [teardown]);
 
-  const open = useCallback(() => {
+  const open = useCallback((isRestart: boolean) => {
     const Ctor = getRecognition();
     if (!Ctor) {
       setStatus('unsupported');
@@ -126,13 +140,30 @@ export function useSpeech(onFinal: (phrase: FinalPhrase) => void, lang: string) 
     }
     const recognition = new Ctor();
     recognition.lang = lang;
-    recognition.continuous = true;
+    // Chrome on Android repeats and merges results in continuous mode, so
+    // there we take one phrase per session and reopen after each pause.
+    recognition.continuous = !/android/i.test(navigator.userAgent);
     recognition.interimResults = true;
     recognition.maxAlternatives = 3;
     // Results already handed over in this session, so a browser that re-sends
     // finished results (Chrome on Android does) can't duplicate words.
     const committed = new Set<number>();
+    // Chrome on Android sends each final result as the whole session so far
+    // ("send the", "send the file"); keep only the new words.
+    let sessionText = '';
+    let pendingText = '';
+    const commit = (raw: string, confidence: number) => {
+      let text = raw.trim();
+      const lower = text.toLowerCase();
+      const seen = sessionText.toLowerCase();
+      if (seen.split(' ').length >= 3 && lower === seen) return;
+      if (seen && lower.length > seen.length && lower.startsWith(`${seen} `)) text = text.slice(seen.length).trim();
+      if (!text) return;
+      sessionText = `${sessionText} ${text}`.trim();
+      onFinalRef.current({ text, confidence });
+    };
 
+    recognition.onaudiostart = () => setAudioActive(true);
     recognition.onspeechstart = () => setHearing(true);
     recognition.onresult = (event) => {
       let pending = '';
@@ -142,31 +173,40 @@ export function useSpeech(onFinal: (phrase: FinalPhrase) => void, lang: string) 
         if (result.isFinal) {
           if (committed.has(i)) continue;
           committed.add(i);
-          const text = alternative.transcript.trim();
-          if (text) onFinalRef.current({ text, confidence: alternative.confidence });
+          commit(alternative.transcript, alternative.confidence);
         } else {
           pending += alternative.transcript;
         }
       }
-      setInterim(pending.trim());
+      pendingText = pending.trim();
+      setInterim(pendingText);
       setHearing(true);
     };
     recognition.onerror = (event) => {
       const message = FATAL_ERRORS[event.error];
       if (!message) return; // no-speech, aborted: the onend restart handles it
       wantedRef.current = false;
+      if (isRestart && event.error === 'not-allowed') {
+        // Safari and iOS refuse to reopen the mic without a fresh tap.
+        setNotice('Paused after a silence. Press the mic to keep going.');
+        return;
+      }
       setError(message);
       setStatus('error');
     };
     recognition.onend = () => {
+      // Some engines end the session without finalising the last words.
+      if (pendingText) commit(pendingText, 0);
+      pendingText = '';
       setInterim('');
       setHearing(false);
+      setAudioActive(false);
       if (recognitionRef.current !== recognition) return;
       recognitionRef.current = null;
       // Browsers end a session after a pause or about a minute of audio.
       // Reopen it so long dictation keeps going until the user presses stop.
       if (wantedRef.current) {
-        restartTimer.current = window.setTimeout(open, 150);
+        restartTimer.current = window.setTimeout(() => open(true), 150);
       } else {
         setStatus((current) => (current === 'error' ? current : 'idle'));
       }
@@ -189,8 +229,9 @@ export function useSpeech(onFinal: (phrase: FinalPhrase) => void, lang: string) 
     teardown();
     wantedRef.current = true;
     setError('');
+    setNotice('');
     setStatus('listening');
-    open();
+    open(false);
   }, [open, teardown]);
 
   const stop = useCallback(() => {
@@ -201,5 +242,5 @@ export function useSpeech(onFinal: (phrase: FinalPhrase) => void, lang: string) 
     else setStatus((current) => (current === 'listening' ? 'idle' : current));
   }, []);
 
-  return { status, interim, error, hearing, start, stop };
+  return { status, interim, error, notice, hearing, audioActive, start, stop };
 }

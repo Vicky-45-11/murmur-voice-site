@@ -10,6 +10,8 @@ export function useMicLevel(active: boolean) {
     if (!active || !navigator.mediaDevices?.getUserMedia) return;
     // Phones often can't share the mic between two listeners; skip the meter there.
     if (window.matchMedia('(pointer: coarse)').matches) return;
+    // Safari can drop speech recognition when a second stream opens the mic.
+    if (/^((?!chrome|chromium|android|edg).)*safari/i.test(navigator.userAgent)) return;
 
     let cancelled = false;
     let frame = 0;

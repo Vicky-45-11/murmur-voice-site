@@ -72,7 +72,7 @@ export default function LiveDemo() {
   );
   const speech = useSpeech(appendPhrase, lang);
   const listening = speech.status === 'listening';
-  const level = useMicLevel(listening);
+  const level = useMicLevel(listening && speech.audioActive);
 
   // Session timer for the words-per-minute readout.
   useEffect(() => {
@@ -201,6 +201,8 @@ export default function LiveDemo() {
     status = speech.error;
   } else if (listening) {
     status = speech.hearing ? 'Hearing you…' : 'Listening. Start talking whenever you’re ready.';
+  } else if (speech.notice) {
+    status = speech.notice;
   } else if (spokenWords) {
     status = `Last session ${sessionLine}`;
   } else {
