@@ -5,6 +5,7 @@ import AppStrip from './components/AppStrip';
 import LiveDemo from './components/LiveDemo';
 import Features from './components/Features';
 import UseCases from './components/UseCases';
+import TypingTest from './components/TypingTest';
 import SpeedCalculator from './components/SpeedCalculator';
 import Privacy from './components/Privacy';
 import Pricing from './components/Pricing';
@@ -14,6 +15,8 @@ import Footer from './components/Footer';
 import WaitlistDialog from './components/WaitlistDialog';
 
 export default function App() {
+  const [typingWpm, setTypingWpm] = useState<number | null>(null);
+  const [speakingWpm, setSpeakingWpm] = useState<number | null>(null);
   const [waitlist, setWaitlist] = useState<{ open: boolean; plan: string }>({ open: false, plan: 'Pro' });
   const openWaitlist = useCallback((plan = 'Pro') => setWaitlist({ open: true, plan }), []);
   const closeWaitlist = useCallback(() => setWaitlist((current) => ({ ...current, open: false })), []);
@@ -30,7 +33,8 @@ export default function App() {
         <LiveDemo />
         <Features />
         <UseCases />
-        <SpeedCalculator />
+        <TypingTest onTypingWpm={setTypingWpm} onSpeakingWpm={setSpeakingWpm} />
+        <SpeedCalculator typingResult={typingWpm} speakingResult={speakingWpm} />
         <Privacy />
         <Pricing onChoose={openWaitlist} />
         <Faq />
